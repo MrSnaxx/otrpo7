@@ -1,4 +1,4 @@
-# Asynchronous Web Crawler with RabbitMQ
+# Asynchronous Web Crawler w/ RabbitMQ
 
 ## Описание проекта
 
