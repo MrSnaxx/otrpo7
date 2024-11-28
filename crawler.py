@@ -12,13 +12,30 @@ load_dotenv('par.env')
 RABBITMQ_URL = os.getenv("RABBITMQ_URL")
 QUEUE_NAME = os.getenv("QUEUE_NAME")
 
+
 async def fetch(session, url):
-    """Загрузка страницы по URL."""
+    """Загрузка страницы по URL с учетом кодировки."""
     try:
         async with session.get(url, ssl=False) as response:
             response.raise_for_status()
-            print(f"[INFO] Страница загружена: {url}")
-            return await response.text()
+            content_type = response.headers.get("Content-Type", "")
+            # Пытаемся определить кодировку из заголовков
+            charset = "utf-8"  # Кодировка по умолчанию
+            if "charset=" in content_type:
+                charset = content_type.split("charset=")[-1]
+
+            # Читаем содержимое страницы
+            raw_content = await response.read()
+
+            try:
+                html = raw_content.decode(charset)
+            except UnicodeDecodeError:
+                # Попытка с альтернативной кодировкой (например, Windows-1251)
+                charset = "windows-1251"
+                html = raw_content.decode(charset)
+
+            print(f"[INFO] Страница загружена: {url} (кодировка: {charset})")
+            return html
     except Exception as e:
         print(f"[ERROR] Ошибка при загрузке {url}: {e}")
         return None
@@ -46,6 +63,13 @@ async def extract_links(html, base_url):
 
     return links
 
+async def clear_queue(connection, queue_name):
+    """Очистка очереди в RabbitMQ."""
+    async with connection.channel() as channel:
+        queue = await channel.declare_queue(queue_name, durable=True)
+        await queue.purge()
+        print(f"[INFO] Очередь '{queue_name}' очищена.")
+
 async def main():
     """Основной процесс."""
     if len(sys.argv) != 2:
@@ -54,23 +78,28 @@ async def main():
 
     url = sys.argv[1]
 
-    async with aiohttp.ClientSession() as session:
-        html = await fetch(session, url)
-        if not html:
-            return
-        links = await extract_links(html, url)
-
+    # Подключение к RabbitMQ
     connection = await connect_robust(RABBITMQ_URL)
-    async with connection:
-        channel = await connection.channel()
-        queue = await channel.declare_queue(QUEUE_NAME, durable=True)
 
-        for link in links:
-            await channel.default_exchange.publish(
-                Message(link.encode()),
-                routing_key=queue.name,
-            )
-            print(f"[QUEUE] Добавлено: {link}")
+    # Очистка очереди
+    await clear_queue(connection, QUEUE_NAME)
+
+    async with connection:
+        async with aiohttp.ClientSession() as session:
+            html = await fetch(session, url)
+            if not html:
+                return
+            links = await extract_links(html, url)
+
+        async with connection.channel() as channel:
+            queue = await channel.declare_queue(QUEUE_NAME, durable=True)
+
+            for link in links:
+                await channel.default_exchange.publish(
+                    Message(link.encode()),
+                    routing_key=queue.name,
+                )
+                print(f"[QUEUE] Добавлено: {link}")
 
 if __name__ == "__main__":
     try:
