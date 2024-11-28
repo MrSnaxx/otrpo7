@@ -1,0 +1,5 @@
+aiohttp
+aio-pika
+beautifulsoup4
+lxml
+python-dotenv
